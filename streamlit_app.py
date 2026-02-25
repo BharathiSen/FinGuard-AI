@@ -10,9 +10,18 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import json
 import os
+import random
 from pathlib import Path
 import time
-import config
+try:
+    import config
+except ImportError:
+    class config:
+        RISK_LOW_MAX = 35
+        RISK_MEDIUM_MAX = 65
+        SIMULATION_INTERVAL_MS = 5000
+        TAX_MIN_PERCENT = 5
+        TAX_MAX_PERCENT = 18
 
 
 # Configure page
@@ -221,28 +230,128 @@ if 'refresh_count' not in st.session_state:
     st.session_state.refresh_count = 0
 if 'last_update' not in st.session_state:
     st.session_state.last_update = datetime.now()
+if 'live_invoices' not in st.session_state:
+    st.session_state['live_invoices'] = []
+if 'live_alerts' not in st.session_state:
+    st.session_state['live_alerts'] = []
+if 'invoice_counter' not in st.session_state:
+    st.session_state['invoice_counter'] = int(datetime.now().timestamp())
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = PROJECT_ROOT / "output"
 
+# ---------------------------------------------------------------------------
+# In-memory Pathway-style streaming engine
+# ---------------------------------------------------------------------------
+_VENDORS = [f"VND-{i:03d}" for i in range(1, 11)]
+_VENDOR_BANK = {
+    "VND-001": "ACC-1234567890", "VND-002": "ACC-2345678901",
+    "VND-003": "ACC-3456789012", "VND-004": "ACC-4567890123",
+    "VND-005": "ACC-5678901234", "VND-006": "ACC-6789012345",
+    "VND-007": "ACC-7890123456", "VND-008": "ACC-8901234567",
+    "VND-009": "ACC-9012345678", "VND-010": "ACC-0123456789",
+}
+_DESCRIPTIONS = ["Monthly service fee", "Hardware procurement", "Software licensing",
+                 "Consulting services", "Office furniture", "Cloud infrastructure",
+                 "Professional services", "Maintenance contract", "Marketing campaign"]
+_CATEGORIES   = ["Office Supplies", "IT Equipment", "Consulting",
+                 "Marketing", "Travel", "Utilities", "Maintenance"]
+_PAYMENTS     = ["Wire Transfer", "Check", "Credit Card", "ACH"]
 
-def load_data(file_path: str) -> pd.DataFrame:
-    """Load JSONL data."""
-    path = Path(file_path)
+
+def _engine_risk(inv: dict) -> float:
+    s = 0.0
+    amt = inv["amount"]
+    if amt > 80000:            s += 0.40
+    elif amt > 40000:          s += 0.20
+    elif 9000 < amt < 10000:   s += 0.30
+    if amt % 1000 == 0:        s += 0.10
+    if inv["bank_account"] != _VENDOR_BANK.get(inv["vendor_id"], ""):
+        s += 0.45
+    if datetime.fromisoformat(inv["timestamp"]).hour < 5:
+        s += 0.20
+    s += random.uniform(0.0, 0.15)
+    return min(round(s, 4), 1.0)
+
+
+def inject_new_invoice():
+    """Generate one invoice per rerun and store in session state."""
+    st.session_state['invoice_counter'] += 1
+    ctr = st.session_state['invoice_counter']
+    vendor = random.choice(_VENDORS)
+    suspicious = random.random() < 0.18
+    if suspicious:
+        amount = random.choice([
+            round(random.uniform(9500, 9999), 2),
+            round(random.uniform(50000, 100000), 2),
+        ])
+        bank = (random.choice(list(_VENDOR_BANK.values()))
+                if random.random() < 0.4 else _VENDOR_BANK[vendor])
+    else:
+        amount = round(random.uniform(200, 30000), 2)
+        bank   = _VENDOR_BANK[vendor]
+    tax = round(amount * random.uniform(
+        config.TAX_MIN_PERCENT / 100.0, config.TAX_MAX_PERCENT / 100.0), 2)
+    inv = {
+        "invoice_id":     f"INV-{datetime.now().strftime('%Y%m%d')}-{ctr:06d}",
+        "vendor_id":      vendor,
+        "amount":         amount,
+        "tax":            tax,
+        "bank_account":   bank,
+        "timestamp":      datetime.now().isoformat(),
+        "description":    random.choice(_DESCRIPTIONS),
+        "category":       random.choice(_CATEGORIES),
+        "payment_method": random.choice(_PAYMENTS),
+    }
+    raw_risk = _engine_risk(inv)
+    inv["risk_score"]  = round(raw_risk * 100, 1)   # 0-100 for display
+    inv["risk_level"]  = ("HIGH" if raw_risk >= 0.65
+                          else "MEDIUM" if raw_risk >= 0.35 else "LOW")
+    inv["decision"]    = ("AUTO_REJECT" if raw_risk >= 0.65
+                          else "REVIEW_REQUIRED" if raw_risk >= 0.35
+                          else "AUTO_APPROVE")
+    st.session_state['live_invoices'].append(inv)
+    if len(st.session_state['live_invoices']) > 500:
+        st.session_state['live_invoices'] = st.session_state['live_invoices'][-500:]
+    if raw_risk >= 0.60:
+        st.session_state['live_alerts'].append(inv)
+        if len(st.session_state['live_alerts']) > 200:
+            st.session_state['live_alerts'] = st.session_state['live_alerts'][-200:]
+    st.session_state['last_update'] = datetime.now()
+    st.session_state['refresh_count'] += 1
+
+
+def load_data(file_path) -> pd.DataFrame:
+    """Load from session-state (Streamlit Cloud) or JSONL file (local)."""
+    key = Path(str(file_path)).name
+    # In-memory mode — always preferred (works on Streamlit Cloud)
+    if key == 'autonomous_decisions.jsonl':
+        data = st.session_state.get('live_invoices', [])
+        if data:
+            df = pd.DataFrame(data)
+            df = df.drop_duplicates(subset=['invoice_id'], keep='last').reset_index(drop=True)
+            return df
+    if key == 'high_risk_alerts.jsonl':
+        data = st.session_state.get('live_alerts', [])
+        if data:
+            return pd.DataFrame(data)
+    # File fallback — local JSONL from injector / Docker
+    path = Path(str(file_path))
     if not path.is_absolute():
         path = PROJECT_ROOT / path
-
     if not path.exists():
         return pd.DataFrame()
-    
     try:
         data = []
         with open(path, 'r') as f:
             for line in f:
                 if line.strip():
                     data.append(json.loads(line))
-        return pd.DataFrame(data)
-    except:
+        df = pd.DataFrame(data)
+        if 'invoice_id' in df.columns and not df.empty:
+            df = df.drop_duplicates(subset=['invoice_id'], keep='last').reset_index(drop=True)
+        return df
+    except Exception:
         return pd.DataFrame()
 
 
@@ -569,13 +678,12 @@ def render_system_status():
 
 def main():
     """Main dashboard."""
-    
-    # Load data
-    decisions_df = load_data(OUTPUT_DIR / 'autonomous_decisions.jsonl')
-    alerts_df = load_data(OUTPUT_DIR / 'high_risk_alerts.jsonl')
 
-    if decisions_df.empty and alerts_df.empty:
-        st.warning("Live backend data not found. Start pipeline backend to sync dashboard.")
+    # Pathway-style: generate one new invoice on every rerun
+    inject_new_invoice()
+
+    decisions_df = load_data(OUTPUT_DIR / 'autonomous_decisions.jsonl')
+    alerts_df    = load_data(OUTPUT_DIR / 'high_risk_alerts.jsonl')
     
     # Header
     render_header()
