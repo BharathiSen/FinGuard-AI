@@ -25,6 +25,7 @@ openai>=1.0.0  # For GPT-based explanations (optional)
 # DASHBOARD - Streamlit Monitoring Interface
 # ============================================================================
 streamlit>=1.28.0
+plotly>=5.14.0  # Enterprise dashboard charts
 pandas>=2.0.0  # Only for dashboard display, NOT core processing
 
 # ============================================================================

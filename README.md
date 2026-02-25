@@ -44,6 +44,34 @@ risk_engine.py          → Dynamic risk scoring + 🔥 Autonomous decisions
 llm_explainer.py        → Real-time explanation generation
 pipeline.py             → Main streaming orchestrator
 streamlit_app.py        → Live monitoring dashboard
+streamlit_app_enterprise.py → 🏢 Enterprise financial risk control dashboard
+```
+
+## 🖥️ Dashboard Options
+
+### **Standard Dashboard** (`streamlit_app.py`)
+- Real-time alerts and metrics
+- Auto-refreshing data
+- Interactive visualizations
+- Suitable for general monitoring
+
+### **Enterprise Dashboard** (`streamlit_app_enterprise.py`) 🏢
+- Professional financial risk control interface
+- Monochrome design (dark navy accent)
+- High data density
+- Minimal, enterprise-grade styling
+- Bloomberg/SAP-inspired aesthetics
+- Perfect for executive presentations
+
+**Launch Dashboard:**
+```bash
+# Standard version
+streamlit run streamlit_app.py
+
+# Enterprise version (recommended)
+python launch_dashboard.py
+# OR
+streamlit run streamlit_app_enterprise.py
 ```
 
 ### Data Flow (Event-Driven)
