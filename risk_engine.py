@@ -5,6 +5,7 @@ Combines multiple fraud signals into a comprehensive risk score.
 
 import pathway as pw
 from typing import Dict, List, Optional
+import config
 
 
 class RiskScoreSchema(pw.Schema):
@@ -271,10 +272,10 @@ def compute_composite_risk_score(
     
     if weights is None:
         weights = {
-            "amount": 0.35,
-            "vendor": 0.25,
-            "temporal": 0.15,
-            "pattern": 0.25
+            "amount": config.RISK_WEIGHT_AMOUNT,
+            "vendor": config.RISK_WEIGHT_VENDOR,
+            "temporal": 1.0 - config.RISK_WEIGHT_AMOUNT - config.RISK_WEIGHT_VENDOR - config.RISK_WEIGHT_PATTERN,
+            "pattern": config.RISK_WEIGHT_PATTERN
         }
     
     # Compute individual risk components
@@ -329,10 +330,10 @@ def compute_composite_risk_score(
     risk_scores = risk_scores.select(
         *pw.this,
         risk_level=pw.if_else(
-            pw.this.risk_score >= 0.7,
+            pw.this.risk_score >= (config.RISK_MEDIUM_MAX / 100.0),
             "HIGH",
             pw.if_else(
-                pw.this.risk_score >= 0.4,
+                pw.this.risk_score >= (config.RISK_LOW_MAX / 100.0),
                 "MEDIUM",
                 "LOW"
             )
@@ -394,40 +395,40 @@ def apply_autonomous_decision(risk_scores: pw.Table) -> pw.Table:
         *pw.this,
         # Autonomous decision logic
         decision=pw.if_else(
-            pw.this.risk_score < 0.30,
+            pw.this.risk_score < (config.AUTO_APPROVE_MAX / 100.0),
             "AUTO_APPROVE",
             pw.if_else(
-                pw.this.risk_score >= 0.70,
+                pw.this.risk_score >= (config.AUTO_REJECT_MIN / 100.0),
                 "AUTO_REJECT",
                 "REVIEW_REQUIRED"
             )
         ),
         # Decision confidence
         decision_confidence=pw.if_else(
-            pw.this.risk_score < 0.30,
+            pw.this.risk_score < (config.AUTO_APPROVE_MAX / 100.0),
             (1.0 - pw.this.risk_score) * 100,  # Lower risk = higher confidence
             pw.if_else(
-                pw.this.risk_score >= 0.70,
+                pw.this.risk_score >= (config.AUTO_REJECT_MIN / 100.0),
                 pw.this.risk_score * 100,  # Higher risk = higher reject confidence
                 50.0  # Medium confidence for review zone
             )
         ),
         # Action required flag
         requires_action=pw.if_else(
-            (pw.this.risk_score >= 0.30) & (pw.this.risk_score < 0.70),
+            (pw.this.risk_score >= (config.AUTO_APPROVE_MAX / 100.0)) & (pw.this.risk_score < (config.AUTO_REJECT_MIN / 100.0)),
             True,
             False
         ),
         # Auto-approval flag (for fast-track processing)
-        auto_approved=pw.if_else(pw.this.risk_score < 0.30, True, False),
+        auto_approved=pw.if_else(pw.this.risk_score < (config.AUTO_APPROVE_MAX / 100.0), True, False),
         # Auto-rejection flag (block payment)
-        auto_rejected=pw.if_else(pw.this.risk_score >= 0.70, True, False),
+        auto_rejected=pw.if_else(pw.this.risk_score >= (config.AUTO_REJECT_MIN / 100.0), True, False),
         # Decision rationale
         decision_reason=pw.if_else(
-            pw.this.risk_score < 0.30,
+            pw.this.risk_score < (config.AUTO_APPROVE_MAX / 100.0),
             "Low risk score - invoice meets all safety criteria",
             pw.if_else(
-                pw.this.risk_score >= 0.70,
+                pw.this.risk_score >= (config.AUTO_REJECT_MIN / 100.0),
                 "High fraud probability - multiple risk factors detected",
                 "Moderate risk - requires manual verification"
             )
@@ -511,11 +512,11 @@ def compute_realtime_risk_score(invoices: pw.Table) -> pw.Table:
     """
     
     # Calculate tax mismatch (simplified: check if tax is within expected range)
-    # Expected tax: 5-10% of amount
+    # Expected tax: configured min-max percentage of amount
     invoices_with_checks = invoices.select(
         *pw.this,
         tax_mismatch=pw.if_else(
-            (pw.this.tax < pw.this.amount * 0.05) | (pw.this.tax > pw.this.amount * 0.10),
+            (pw.this.tax < pw.this.amount * (config.TAX_MIN_PERCENT / 100.0)) | (pw.this.tax > pw.this.amount * (config.TAX_MAX_PERCENT / 100.0)),
             True,
             False
         ),
@@ -534,9 +535,9 @@ def compute_realtime_risk_score(invoices: pw.Table) -> pw.Table:
     # Apply risk scoring rules
     risk_scored = invoices_with_checks.select(
         *pw.this,
-        # Rule 1: Deviation > 30% → +30 risk
+        # Rule 1: Deviation > threshold → +30 risk
         deviation_risk_points=pw.if_else(
-            pw.apply(lambda x: abs(x) > 30, pw.this.deviation_percentage),
+            pw.apply(lambda x: abs(x) > config.DEVIATION_THRESHOLD_PERCENT, pw.this.deviation_percentage),
             30,
             0
         ),
@@ -546,9 +547,9 @@ def compute_realtime_risk_score(invoices: pw.Table) -> pw.Table:
             40,
             0
         ),
-        # Rule 3: Duplicate similarity > 0.85 → +50 risk
+        # Rule 3: Duplicate similarity > threshold → +50 risk
         duplicate_risk_points=pw.if_else(
-            pw.this.dup_similarity > 0.85,
+            pw.this.dup_similarity > config.DUPLICATE_SIMILARITY_THRESHOLD,
             50,
             0
         ),
@@ -585,28 +586,28 @@ def compute_realtime_risk_score(invoices: pw.Table) -> pw.Table:
         ),
         # Risk level categorization
         risk_level=pw.if_else(
-            pw.this.raw_risk_score > 60,
+            pw.this.raw_risk_score > config.RISK_MEDIUM_MAX,
             "High",
             pw.if_else(
-                pw.this.raw_risk_score > 30,
+                pw.this.raw_risk_score > config.RISK_LOW_MAX,
                 "Medium",
                 "Low"
             )
         ),
         # Decision based on risk level
         decision=pw.if_else(
-            pw.this.raw_risk_score > 60,
+            pw.this.raw_risk_score > config.RISK_MEDIUM_MAX,
             "Reject",
             pw.if_else(
-                pw.this.raw_risk_score > 30,
+                pw.this.raw_risk_score > config.RISK_LOW_MAX,
                 "Review",
                 "Approve"
             )
         ),
         # Include contributing factors for transparency
-        deviation_triggered=pw.apply(lambda x: abs(x) > 30, pw.this.deviation_percentage),
+        deviation_triggered=pw.apply(lambda x: abs(x) > config.DEVIATION_THRESHOLD_PERCENT, pw.this.deviation_percentage),
         bank_change_triggered=pw.this.bank_account_changed,
-        duplicate_triggered=(pw.this.dup_similarity > 0.85),
+        duplicate_triggered=(pw.this.dup_similarity > config.DUPLICATE_SIMILARITY_THRESHOLD),
         tax_mismatch_triggered=pw.this.tax_mismatch,
         # Risk breakdown
         risk_breakdown=pw.cast(str, 

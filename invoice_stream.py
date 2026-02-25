@@ -7,6 +7,7 @@ import pathway as pw
 import random
 from datetime import datetime, timedelta
 from typing import Optional
+import config
 
 
 class InvoiceSchema(pw.Schema):
@@ -24,21 +25,25 @@ class InvoiceSchema(pw.Schema):
 
 def generate_invoice_stream(
     num_invoices: Optional[int] = None,
-    interval_ms: int = 5000  # 5 seconds between invoices
+    interval_ms: int = None  # Default from config
 ) -> pw.Table:
     """
     Generate a simulated live stream of invoices using Pathway.
     
-    Emits a new invoice every 5 seconds (configurable) with event-driven updates.
+    Emits a new invoice every interval_ms milliseconds with event-driven updates.
     Each invoice automatically triggers downstream processing in the pipeline.
     
     Args:
         num_invoices: Number of invoices to generate (None for infinite stream)
-        interval_ms: Interval between invoice generation in milliseconds (default: 5000ms = 5s)
+        interval_ms: Interval between invoice generation in milliseconds (default from config)
     
     Returns:
         Pathway Table with invoice data (auto-updating)
     """
+    
+    # Use config value if not provided
+    if interval_ms is None:
+        interval_ms = config.SIMULATION_INTERVAL_MS
     
     # Sample data for realistic invoice generation
     vendors = [
@@ -109,8 +114,8 @@ def generate_invoice_stream(
                 amount = round(random.uniform(100, 25000), 2)
                 bank_account = vendor_bank_accounts[vendor]
             
-            # Calculate tax (realistic rates: 5-10%)
-            tax_rate = random.choice([0.05, 0.07, 0.08, 0.10])
+            # Calculate tax (using configured tax rate range)
+            tax_rate = random.uniform(config.TAX_MIN_PERCENT / 100.0, config.TAX_MAX_PERCENT / 100.0)
             tax = round(amount * tax_rate, 2)
             
             invoice_data = {

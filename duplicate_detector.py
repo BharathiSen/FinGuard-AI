@@ -6,6 +6,7 @@ Detects near-duplicate invoices that may indicate fraud attempts.
 import pathway as pw
 from typing import Optional
 import numpy as np
+import config
 
 
 def create_invoice_text(invoice: pw.Table) -> pw.Table:
@@ -148,7 +149,7 @@ def _compute_sentence_transformer_embeddings(
 
 def detect_duplicates(
     invoices: pw.Table,
-    similarity_threshold: float = 0.95,
+    similarity_threshold: float = None,
     time_window_hours: int = 24
 ) -> pw.Table:
     """
@@ -156,12 +157,16 @@ def detect_duplicates(
     
     Args:
         invoices: Pathway Table with embeddings
-        similarity_threshold: Cosine similarity threshold for duplicates
+        similarity_threshold: Cosine similarity threshold for duplicates (default from config)
         time_window_hours: Time window to check for duplicates
     
     Returns:
         Pathway Table with duplicate flags
     """
+    
+    # Use config value if not provided
+    if similarity_threshold is None:
+        similarity_threshold = config.DUPLICATE_SIMILARITY_THRESHOLD
     
     # Compute embeddings
     invoices_with_embeddings = compute_embeddings(invoices)
