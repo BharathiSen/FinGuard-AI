@@ -1,0 +1,34 @@
+# FinGuard AI - Real-Time Financial Fraud Detection
+# Minimal requirements for Pathway streaming pipeline
+
+# ============================================================================
+# CORE FRAMEWORK - Pathway Streaming Engine
+# ============================================================================
+pathway>=0.8.0
+
+# ============================================================================
+# MINIMAL DATA PROCESSING
+# ============================================================================
+numpy>=1.24.0  # For numerical operations in embeddings
+
+# ============================================================================
+# OPTIONAL: Embeddings (for advanced duplicate detection)
+# ============================================================================
+sentence-transformers>=2.2.0  # Semantic similarity (optional)
+
+# ============================================================================
+# OPTIONAL: LLM Integration (requires API keys)
+# ============================================================================
+openai>=1.0.0  # For GPT-based explanations (optional)
+
+# ============================================================================
+# DASHBOARD - Streamlit Monitoring Interface
+# ============================================================================
+streamlit>=1.28.0
+pandas>=2.0.0  # Only for dashboard display, NOT core processing
+
+# ============================================================================
+# UTILITIES
+# ============================================================================
+python-dotenv>=1.0.0  # Environment variable management
+
