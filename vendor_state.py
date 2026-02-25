@@ -48,16 +48,28 @@ def track_vendor_state(invoices: pw.Table) -> pw.Table:
         total_amount=pw.reducers.sum(invoices.amount),
         # Rolling average - updates incrementally
         avg_amount=pw.reducers.avg(invoices.amount),
+        # E[X²] for stddev computation (pw 0.8.0 has no pw.reducers.stddev)
+        _avg_amount_sq=pw.reducers.avg(invoices.amount * invoices.amount),
         # Range statistics for anomaly detection
         max_amount=pw.reducers.max(invoices.amount),
         min_amount=pw.reducers.min(invoices.amount),
-        stddev_amount=pw.reducers.stddev(invoices.amount),
-        # Temporal tracking
-        last_invoice_time=pw.reducers.latest(invoices.timestamp),
+        # Temporal tracking — max() on ISO strings = most recent timestamp
+        last_invoice_time=pw.reducers.max(invoices.timestamp),
         # Bank account tracking - stores most recent bank account
-        last_bank_account=pw.reducers.latest(invoices.bank_account)
+        last_bank_account=pw.reducers.max(invoices.bank_account)
     )
-    
+
+    # Compute stddev = sqrt(E[X²] - (E[X])²) via pw.apply_with_type
+    vendor_stats = vendor_stats.select(
+        *pw.this,
+        stddev_amount=pw.apply_with_type(
+            lambda sq, mean: float(max(0.0, sq - mean * mean) ** 0.5),
+            float,
+            pw.this._avg_amount_sq,
+            pw.this.avg_amount
+        )
+    )
+
     return vendor_stats
 
 
