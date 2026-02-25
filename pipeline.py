@@ -9,6 +9,7 @@ This is a PURE STREAMING pipeline - all updates happen automatically as new invo
 import pathway as pw
 from typing import Optional
 import os
+from pathlib import Path
 
 # Import pipeline components
 from invoice_stream import generate_invoice_stream
@@ -215,47 +216,53 @@ class FraudDetectionPipeline:
         
         print("📤 Setting up real-time outputs...")
         
+        project_root = Path(__file__).resolve().parent
+        output_dir = project_root / "output"
+
         # Create output directory
-        os.makedirs("output", exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+
+        def output_path(filename: str) -> str:
+            return str(output_dir / filename)
         
         # Write streaming output - auto-updates as new invoices arrive
         
         # High-risk alerts only
         pw.io.jsonlines.write(
             self.high_risk_alerts,
-            "output/high_risk_alerts.jsonl"
+            output_path("high_risk_alerts.jsonl")
         )
         
         # Detailed explanations for high-risk invoices
         pw.io.jsonlines.write(
             self.explanations,
-            "output/explanations.jsonl"
+            output_path("explanations.jsonl")
         )
         
         # Vendor statistics (incremental aggregations)
         pw.io.jsonlines.write(
             self.vendor_stats,
-            "output/vendor_stats.jsonl"
+            output_path("vendor_stats.jsonl")
         )
         
         # 🔥 Autonomous decisions (all invoices)
         pw.io.jsonlines.write(
             self.decisions,
-            "output/autonomous_decisions.jsonl"
+            output_path("autonomous_decisions.jsonl")
         )
         
         # 📝 All invoices with professional explanations
         if self.explained_invoices is not None:
             pw.io.jsonlines.write(
                 self.explained_invoices,
-                "output/all_invoices_explained.jsonl"
+                output_path("all_invoices_explained.jsonl")
             )
         
         # 📊 Real-time risk scores (if using focused scoring)
         if self.use_realtime_scoring and self.realtime_risk is not None:
             pw.io.jsonlines.write(
                 self.realtime_risk,
-                "output/realtime_risk_scores.jsonl"
+                output_path("realtime_risk_scores.jsonl")
             )
     
     def run(self):

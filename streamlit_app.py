@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
+import time
+import config
 
 
 # Configure page
@@ -220,15 +222,22 @@ if 'refresh_count' not in st.session_state:
 if 'last_update' not in st.session_state:
     st.session_state.last_update = datetime.now()
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+OUTPUT_DIR = PROJECT_ROOT / "output"
+
 
 def load_data(file_path: str) -> pd.DataFrame:
     """Load JSONL data."""
-    if not os.path.exists(file_path):
+    path = Path(file_path)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+
+    if not path.exists():
         return pd.DataFrame()
     
     try:
         data = []
-        with open(file_path, 'r') as f:
+        with open(path, 'r') as f:
             for line in f:
                 if line.strip():
                     data.append(json.loads(line))
@@ -333,16 +342,45 @@ def render_risk_trend_chart(decisions_df: pd.DataFrame):
     st.markdown('<div class="section-header">Risk Distribution Trend</div>', unsafe_allow_html=True)
     st.markdown('<p style="color: #64748B; font-size: 0.875rem; margin-top: -0.75rem; margin-bottom: 1rem;">7-day invoice risk assessment breakdown</p>', unsafe_allow_html=True)
     
-    # Simulate 7-day trend data
-    days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-    low_risk = [45, 52, 48, 61, 55, 68, 71]
-    medium_risk = [32, 35, 40, 38, 42, 28, 30]
-    high_risk = [23, 18, 21, 15, 19, 12, 14]
+    # Build 7-day trend data from live decisions
+    date_index = pd.date_range(end=datetime.now().date(), periods=7, freq='D')
+    day_labels = [d.strftime('%a') for d in date_index]
+
+    low_risk = [0] * 7
+    medium_risk = [0] * 7
+    high_risk = [0] * 7
+
+    if not decisions_df.empty and 'timestamp' in decisions_df.columns and 'risk_score' in decisions_df.columns:
+        chart_df = decisions_df.copy()
+        chart_df['timestamp'] = pd.to_datetime(chart_df['timestamp'], errors='coerce')
+        chart_df = chart_df.dropna(subset=['timestamp'])
+
+        if not chart_df.empty:
+            max_score = chart_df['risk_score'].max()
+            if pd.notna(max_score) and max_score <= 1.0:
+                chart_df['risk_score_pct'] = chart_df['risk_score'] * 100.0
+            else:
+                chart_df['risk_score_pct'] = chart_df['risk_score']
+
+            chart_df['risk_bucket'] = chart_df['risk_score_pct'].apply(
+                lambda score: (
+                    'Low Risk' if score <= config.RISK_LOW_MAX
+                    else 'Medium Risk' if score <= config.RISK_MEDIUM_MAX
+                    else 'High Risk'
+                )
+            )
+            chart_df['day'] = chart_df['timestamp'].dt.date
+
+            grouped = chart_df.groupby(['day', 'risk_bucket']).size().unstack(fill_value=0)
+
+            low_risk = [int(grouped.get('Low Risk', pd.Series()).get(day.date(), 0)) for day in date_index]
+            medium_risk = [int(grouped.get('Medium Risk', pd.Series()).get(day.date(), 0)) for day in date_index]
+            high_risk = [int(grouped.get('High Risk', pd.Series()).get(day.date(), 0)) for day in date_index]
     
     fig = go.Figure()
     
     fig.add_trace(go.Scatter(
-        x=days, y=low_risk,
+        x=day_labels, y=low_risk,
         name='Low Risk',
         mode='lines+markers',
         line=dict(color='#10B981', width=2),
@@ -350,7 +388,7 @@ def render_risk_trend_chart(decisions_df: pd.DataFrame):
     ))
     
     fig.add_trace(go.Scatter(
-        x=days, y=medium_risk,
+        x=day_labels, y=medium_risk,
         name='Medium Risk',
         mode='lines+markers',
         line=dict(color='#F59E0B', width=2),
@@ -358,7 +396,7 @@ def render_risk_trend_chart(decisions_df: pd.DataFrame):
     ))
     
     fig.add_trace(go.Scatter(
-        x=days, y=high_risk,
+        x=day_labels, y=high_risk,
         name='High Risk',
         mode='lines+markers',
         line=dict(color='#EF4444', width=2),
@@ -445,13 +483,10 @@ def render_recent_transactions(decisions_df: pd.DataFrame):
     st.markdown(final_df.to_html(index=False, escape=False, classes='dataframe'), unsafe_allow_html=True)
 
 
-def render_decision_engine_sidebar():
+def render_decision_engine_sidebar(decisions_df: pd.DataFrame):
     """Render decision engine stats in sidebar."""
     
     st.markdown('<div class="section-header">Decision Engine</div>', unsafe_allow_html=True)
-    
-    # Load decisions
-    decisions_df = load_data('output/autonomous_decisions.jsonl')
     
     if not decisions_df.empty and 'decision' in decisions_df.columns:
         approved = len(decisions_df[decisions_df['decision'] == 'AUTO_APPROVE'])
@@ -482,19 +517,23 @@ def render_decision_engine_sidebar():
     """, unsafe_allow_html=True)
 
 
-def render_critical_alerts():
+def render_critical_alerts(alerts_df: pd.DataFrame):
     """Render critical alerts sidebar."""
     
     st.markdown('<div class="section-header" style="margin-top: 2rem;">Critical Alerts</div>', unsafe_allow_html=True)
     
-    # Simulated high-risk vendors
-    alerts = [
-        ('International Trading LLC', 94),
-        ('Consolidated Supply Co.', 87),
-        ('North America Distributing', 76)
-    ]
-    
-    for vendor, risk in alerts:
+    if alerts_df.empty:
+        st.markdown('<div style="font-size: 0.875rem; color: #64748B; margin-top: 0.5rem;">No critical alerts</div>', unsafe_allow_html=True)
+        return
+
+    if 'risk_score' in alerts_df.columns:
+        display_alerts = alerts_df.nlargest(3, 'risk_score').copy()
+    else:
+        display_alerts = alerts_df.head(3).copy()
+
+    for _, row in display_alerts.iterrows():
+        vendor = row.get('vendor_id', 'Unknown Vendor')
+        risk = row.get('risk_score', 'N/A')
         st.markdown(f"""
         <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 0; border-bottom: 1px solid #F1F5F9;">
             <div style="flex: 1;">
@@ -532,8 +571,11 @@ def main():
     """Main dashboard."""
     
     # Load data
-    decisions_df = load_data('output/autonomous_decisions.jsonl')
-    alerts_df = load_data('output/high_risk_alerts.jsonl')
+    decisions_df = load_data(OUTPUT_DIR / 'autonomous_decisions.jsonl')
+    alerts_df = load_data(OUTPUT_DIR / 'high_risk_alerts.jsonl')
+
+    if decisions_df.empty and alerts_df.empty:
+        st.warning("Live backend data not found. Start pipeline backend to sync dashboard.")
     
     # Header
     render_header()
@@ -559,13 +601,20 @@ def main():
     
     with col2:
         # Decision engine stats
-        render_decision_engine_sidebar()
+        render_decision_engine_sidebar(decisions_df)
         
         # Critical alerts
-        render_critical_alerts()
+        render_critical_alerts(alerts_df)
         
         # System status
         render_system_status()
+
+    # Auto-refresh dashboard for live sync
+    auto_refresh = st.sidebar.checkbox("Auto-refresh", value=True)
+    refresh_interval = st.sidebar.slider("Refresh interval (seconds)", min_value=2, max_value=30, value=5)
+    if auto_refresh:
+        time.sleep(refresh_interval)
+        st.rerun()
 
 
 if __name__ == "__main__":
