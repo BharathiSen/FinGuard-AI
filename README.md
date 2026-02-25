@@ -38,7 +38,8 @@ FinGuard AI is a **100% streaming-based** fraud detection system that:
 ```
 invoice_stream.py       → Real-time invoice generation (Pathway streaming)
 vendor_state.py         → Incremental vendor statistics (auto-updating)
-duplicate_detector.py   → Streaming duplicate detection
+duplicate_detector.py   → Streaming duplicate detection (exact/fuzzy)
+semantic_duplicates.py  → 🧠 Semantic duplicate detection (embeddings)
 risk_engine.py          → Dynamic risk scoring + 🔥 Autonomous decisions
 llm_explainer.py        → Real-time explanation generation
 pipeline.py             → Main streaming orchestrator
@@ -110,12 +111,24 @@ pip install -r requirements.txt
 python pipeline.py
 ```
 
+**With Semantic Duplicate Detection:**
+```bash
+# Uses sentence transformers for embedding-based duplicate detection
+python pipeline.py --use-semantic-duplicates
+```
+
 **With LLM Explanations:**
 ```bash
 # Set your OpenAI API key
 export OPENAI_API_KEY="your-key-here"  # Windows: set OPENAI_API_KEY=your-key-here
 
 python pipeline.py --use-llm
+```
+
+**Advanced Mode (All Features):**
+```bash
+# Semantic duplicates + LLM explanations + custom threshold
+python pipeline.py --use-semantic-duplicates --semantic-threshold 0.85 --use-llm
 ```
 
 **Finite Stream (for testing):**
@@ -207,9 +220,42 @@ enriched = invoices.join(vendor_stats).select(
 - Category usage pattern tracking
 
 **Duplicate Detection:**
+
+*Fast Mode (Default):*
 - Exact duplicate matching using streaming joins
-- Fuzzy duplicate detection (similar amounts)
-- Optional embedding-based semantic similarity
+- Fuzzy duplicate detection (similar amounts within tolerance)
+- Field-based comparison (vendor + amount + description)
+
+*🧠 Semantic Mode (Optional):*
+- **Embedding-based duplicate detection** using sentence transformers
+- Detects semantically similar invoices even with different wording
+- Example: "Monthly cloud hosting" ≈ "Cloud infrastructure fee" (similarity: 0.87)
+- **Memory-efficient caching** - embeddings stored to avoid recomputation
+- **Cosine similarity comparison** - flags duplicates if similarity > 0.85
+- **Modular architecture** - standalone module usable outside pipeline
+
+```python
+# Semantic duplicate detection
+from semantic_duplicates import SemanticDuplicateDetector
+
+detector = SemanticDuplicateDetector(similarity_threshold=0.85)
+
+# New invoice arrives
+similar = detector.find_similar_invoices(
+    new_description="Monthly cloud fee",
+    existing_descriptions=["Cloud hosting charges", "Office supplies"]
+)
+# Returns: [("Cloud hosting charges", 0.89)] - DUPLICATE DETECTED
+
+# Embeddings cached - no re-embedding of historical invoices
+```
+
+**How it works:**
+1. Convert description → embedding (384-dim vector)
+2. Store embedding in memory cache (key: description)
+3. Compare new embedding vs all cached embeddings
+4. Compute cosine similarity: `cos(θ) = (A·B) / (||A|| ||B||)`
+5. Flag as duplicate if similarity ≥ threshold
 
 **Risk Scoring:**
 - Multi-factor scoring: amount + vendor + temporal + pattern
@@ -229,17 +275,57 @@ enriched = invoices.join(vendor_stats).select(
 - Optional LLM-based explanations (detailed)
 - Actionable recommendations
 
+**📝 Professional Risk Explanation Generator:**
+
+Automatically generates audit-ready explanations using only factual data:
+
+```python
+from llm_explainer import generate_risk_explanation
+
+explanation = generate_risk_explanation(
+    risk_score=85,
+    deviation_percentage=65.0,
+    bank_account_changed=True,
+    duplicate_similarity_score=0.92,
+    tax_mismatch=True
+)
+
+# Output:
+# "This invoice presents significant fraud indicators with a risk score 
+# of 85/100. Multiple critical fraud indicators were identified: amount 
+# deviation of 65.0% from vendor's historical average, recent bank account 
+# change, high similarity (0.92) to existing invoices, and tax calculation 
+# inconsistency. The convergence of these anomalies requires immediate 
+# attention to prevent potential financial loss. Recommended action: 
+# immediate manual review and payment hold."
+```
+
+**Key Features:**
+- ✅ **No Hallucination**: Uses only provided facts
+- ✅ **Professional Tone**: Audit-ready language  
+- ✅ **Consistent Format**: 3-4 sentences every time
+- ✅ **Risk-Appropriate**: Recommendations match severity
+- ✅ **Factor Transparency**: Clearly identifies contributing factors
+
+**Generated Explanations Cover:**
+1. Risk level and score
+2. Specific fraud indicators detected
+3. Why these patterns are concerning
+4. Recommended actions (approve/review/reject)
+
 ## 📁 Project Structure
 
 ```
 FinGuard-AI/
 ├── invoice_stream.py       # Real-time invoice stream generation
 ├── vendor_state.py         # Incremental vendor statistics
-├── duplicate_detector.py   # Streaming duplicate detection
+├── duplicate_detector.py   # Streaming duplicate detection (exact/fuzzy)
+├── semantic_duplicates.py  # 🧠 Semantic duplicate detection (embeddings)
 ├── risk_engine.py          # Dynamic risk scoring
-├── llm_explainer.py        # Real-time explanations
+├── llm_explainer.py        # Real-time explanations + risk explanation generator
 ├── pipeline.py             # Main streaming orchestrator
 ├── streamlit_app.py        # Live dashboard
+├── test_explanation.py     # Test suite for explanation generator
 ├── requirements.txt        # Minimal dependencies
 ├── README.md               # This file
 ├── .env.example            # Configuration template

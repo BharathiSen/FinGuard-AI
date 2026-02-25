@@ -317,31 +317,219 @@ def generate_batch_report(
     return report
 
 
+def generate_risk_explanation(
+    risk_score: float,
+    deviation_percentage: float,
+    bank_account_changed: bool,
+    duplicate_similarity_score: float,
+    tax_mismatch: bool
+) -> str:
+    """
+    Generate a professional financial explanation for invoice risk.
+    
+    Creates audit-ready explanations using only provided facts.
+    No hallucination - uses template-based approach with factual data.
+    
+    Args:
+        risk_score: Overall risk score (0-100)
+        deviation_percentage: Percentage deviation from vendor average
+        bank_account_changed: Boolean flag for bank account change
+        duplicate_similarity_score: Semantic similarity score (0-1)
+        tax_mismatch: Boolean flag for tax calculation issues
+    
+    Returns:
+        Professional 3-4 sentence explanation string
+    """
+    
+    # Identify contributing factors
+    factors = []
+    
+    if abs(deviation_percentage) > 30:
+        factors.append(f"amount deviation of {abs(deviation_percentage):.1f}% from vendor's historical average")
+    
+    if bank_account_changed:
+        factors.append("recent bank account change")
+    
+    if duplicate_similarity_score > 0.85:
+        factors.append(f"high similarity ({duplicate_similarity_score:.2f}) to existing invoices")
+    
+    if tax_mismatch:
+        factors.append("tax calculation inconsistency")
+    
+    # Build explanation based on risk level
+    if risk_score >= 61:
+        # High risk
+        risk_level = "high"
+        action = "immediate manual review and payment hold"
+        severity = "This invoice presents significant fraud indicators"
+    elif risk_score >= 31:
+        # Medium risk
+        risk_level = "medium"
+        action = "verification of invoice details and vendor confirmation"
+        severity = "This invoice exhibits moderate risk factors"
+    else:
+        # Low risk
+        risk_level = "low"
+        action = "standard processing with routine audit"
+        severity = "This invoice shows minimal risk indicators"
+    
+    # Construct professional explanation
+    if len(factors) == 0:
+        explanation = (
+            f"{severity} with a risk score of {risk_score:.0f}/100. "
+            f"All key fraud indicators are within acceptable ranges. "
+            f"Recommended action: {action}."
+        )
+    elif len(factors) == 1:
+        explanation = (
+            f"{severity} with a risk score of {risk_score:.0f}/100. "
+            f"The primary concern is {factors[0]}. "
+            f"This pattern warrants attention as it deviates from normal transaction behavior. "
+            f"Recommended action: {action}."
+        )
+    elif len(factors) == 2:
+        explanation = (
+            f"{severity} with a risk score of {risk_score:.0f}/100. "
+            f"Multiple fraud indicators were detected: {factors[0]} and {factors[1]}. "
+            f"The combination of these factors elevates the risk profile substantially. "
+            f"Recommended action: {action}."
+        )
+    else:
+        # 3 or more factors
+        factor_list = ", ".join(factors[:-1]) + f", and {factors[-1]}"
+        explanation = (
+            f"{severity} with a risk score of {risk_score:.0f}/100. "
+            f"Multiple critical fraud indicators were identified: {factor_list}. "
+            f"The convergence of these anomalies requires immediate attention to prevent potential financial loss. "
+            f"Recommended action: {action}."
+        )
+    
+    return explanation
+
+
+def generate_explanations_for_invoices(invoices: pw.Table) -> pw.Table:
+    """
+    Generate risk explanations for a Pathway table of invoices.
+    
+    Applies generate_risk_explanation() to each invoice row.
+    
+    Args:
+        invoices: Pathway Table with risk scoring fields
+    
+    Returns:
+        Pathway Table with added 'risk_explanation' column
+    """
+    
+    enriched = invoices.select(
+        *pw.this,
+        risk_explanation=pw.apply(
+            generate_risk_explanation,
+            pw.this.risk_score,
+            pw.this.deviation_percentage,
+            pw.this.bank_account_changed,
+            pw.this.duplicate_similarity_score if hasattr(pw.this, 'duplicate_similarity_score') else 0.0,
+            pw.this.tax_mismatch if hasattr(pw.this, 'tax_mismatch') else False
+        )
+    )
+    
+    return enriched
+
+
 if __name__ == "__main__":
-    # Example usage
-    from invoice_stream import generate_invoice_stream
-    from vendor_state import track_vendor_state, enrich_with_vendor_context
-    from risk_engine import compute_composite_risk_score, filter_high_risk_invoices
+    print("=" * 80)
+    print("LLM EXPLANATION GENERATOR - Test Suite")
+    print("=" * 80)
     
-    print("Testing LLM explainer...")
+    # Test 1: High Risk Invoice
+    print("\n" + "=" * 80)
+    print("Test 1: High Risk Invoice")
+    print("=" * 80)
+    print("\nScenario: All fraud indicators triggered")
+    print("  • Risk Score: 100/100")
+    print("  • Deviation: 85% above vendor average")
+    print("  • Bank Account: Changed")
+    print("  • Duplicate Similarity: 0.92")
+    print("  • Tax Mismatch: Yes\n")
     
-    # Generate sample invoices
-    invoices = generate_invoice_stream(num_invoices=50)
+    explanation_high = generate_risk_explanation(
+        risk_score=100,
+        deviation_percentage=85.0,
+        bank_account_changed=True,
+        duplicate_similarity_score=0.92,
+        tax_mismatch=True
+    )
+    print("EXPLANATION:")
+    print(explanation_high)
     
-    # Track vendor statistics
-    vendor_stats = track_vendor_state(invoices)
+    # Test 2: Medium Risk Invoice
+    print("\n" + "=" * 80)
+    print("Test 2: Medium Risk Invoice")
+    print("=" * 80)
+    print("\nScenario: Deviation and bank change")
+    print("  • Risk Score: 50/100")
+    print("  • Deviation: 45% above vendor average")
+    print("  • Bank Account: Changed")
+    print("  • Duplicate Similarity: 0.30")
+    print("  • Tax Mismatch: No\n")
     
-    # Enrich invoices
-    enriched_invoices = enrich_with_vendor_context(invoices, vendor_stats)
+    explanation_medium = generate_risk_explanation(
+        risk_score=50,
+        deviation_percentage=45.0,
+        bank_account_changed=True,
+        duplicate_similarity_score=0.30,
+        tax_mismatch=False
+    )
+    print("EXPLANATION:")
+    print(explanation_medium)
     
-    # Compute risk scores
-    risk_scores = compute_composite_risk_score(enriched_invoices)
+    # Test 3: Low Risk Invoice
+    print("\n" + "=" * 80)
+    print("Test 3: Low Risk Invoice")
+    print("=" * 80)
+    print("\nScenario: Minor tax mismatch only")
+    print("  • Risk Score: 20/100")
+    print("  • Deviation: 5% above vendor average")
+    print("  • Bank Account: Not changed")
+    print("  • Duplicate Similarity: 0.12")
+    print("  • Tax Mismatch: Yes\n")
     
-    # Generate explanations
-    explanations = generate_rule_based_explanation(risk_scores)
+    explanation_low = generate_risk_explanation(
+        risk_score=20,
+        deviation_percentage=5.0,
+        bank_account_changed=False,
+        duplicate_similarity_score=0.12,
+        tax_mismatch=True
+    )
+    print("EXPLANATION:")
+    print(explanation_low)
     
-    # Display high-risk explanations
-    high_risk_explanations = explanations.filter(pw.this.risk_level == "HIGH")
+    # Test 4: No Risk Factors
+    print("\n" + "=" * 80)
+    print("Test 4: Clean Invoice")
+    print("=" * 80)
+    print("\nScenario: No fraud indicators")
+    print("  • Risk Score: 0/100")
+    print("  • Deviation: 2% below vendor average")
+    print("  • Bank Account: Not changed")
+    print("  • Duplicate Similarity: 0.05")
+    print("  • Tax Mismatch: No\n")
     
-    print("\nHigh Risk Explanations:")
-    pw.debug.compute_and_print(high_risk_explanations)
+    explanation_clean = generate_risk_explanation(
+        risk_score=0,
+        deviation_percentage=-2.0,
+        bank_account_changed=False,
+        duplicate_similarity_score=0.05,
+        tax_mismatch=False
+    )
+    print("EXPLANATION:")
+    print(explanation_clean)
+    
+    print("\n" + "=" * 80)
+    print("✅ Explanation Generator Tests Complete")
+    print("=" * 80)
+    print("\nKey Features Demonstrated:")
+    print("  ✓ Fact-based explanations (no hallucination)")
+    print("  ✓ Professional, audit-ready language")
+    print("  ✓ 3-4 sentence format")
+    print("  ✓ Risk-appropriate recommendations")
+    print("  ✓ Clear factor identification")

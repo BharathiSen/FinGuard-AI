@@ -469,28 +469,233 @@ def create_risk_alerts(risk_scores: pw.Table) -> pw.Table:
     return alerts
 
 
+# ============================================================================
+# Focused Risk Scoring Module for Real-Time Invoice Evaluation
+# ============================================================================
+
+def compute_realtime_risk_score(invoices: pw.Table) -> pw.Table:
+    """
+    Compute real-time risk score based on key fraud indicators.
+    
+    Simple, rule-based scoring with clear thresholds.
+    
+    Inputs (from invoice table):
+    - deviation_percentage: Deviation from vendor's rolling average
+    - bank_account_changed: Boolean flag for bank account change
+    - semantic_similarity (or duplicate_similarity_score): From semantic duplicate detection
+    - tax: Tax amount (for mismatch detection)
+    - amount: Invoice amount
+    
+    Scoring Rules:
+    - deviation > 30% → +30 risk points
+    - bank account changed → +40 risk points
+    - duplicate similarity > 0.85 → +50 risk points
+    - tax mismatch → +20 risk points
+    - Risk score capped at 100
+    
+    Risk Levels:
+    - 0-30: Low
+    - 31-60: Medium
+    - 61-100: High
+    
+    Decisions:
+    - Low → Approve
+    - Medium → Review
+    - High → Reject
+    
+    Args:
+        invoices: Pathway Table with fraud indicators
+    
+    Returns:
+        Pathway Table with risk_score, risk_level, and decision
+    """
+    
+    # Calculate tax mismatch (simplified: check if tax is within expected range)
+    # Expected tax: 5-10% of amount
+    invoices_with_checks = invoices.select(
+        *pw.this,
+        tax_mismatch=pw.if_else(
+            (pw.this.tax < pw.this.amount * 0.05) | (pw.this.tax > pw.this.amount * 0.10),
+            True,
+            False
+        ),
+        # Get duplicate similarity if available, default to 0
+        dup_similarity=pw.if_else(
+            hasattr(pw.this, 'semantic_similarity_score'),
+            pw.this.semantic_similarity_score,
+            pw.if_else(
+                hasattr(pw.this, 'duplicate_similarity_score'),
+                pw.this.duplicate_similarity_score,
+                0.0
+            )
+        )
+    )
+    
+    # Apply risk scoring rules
+    risk_scored = invoices_with_checks.select(
+        *pw.this,
+        # Rule 1: Deviation > 30% → +30 risk
+        deviation_risk_points=pw.if_else(
+            pw.apply(lambda x: abs(x) > 30, pw.this.deviation_percentage),
+            30,
+            0
+        ),
+        # Rule 2: Bank account changed → +40 risk
+        bank_change_risk_points=pw.if_else(
+            pw.this.bank_account_changed,
+            40,
+            0
+        ),
+        # Rule 3: Duplicate similarity > 0.85 → +50 risk
+        duplicate_risk_points=pw.if_else(
+            pw.this.dup_similarity > 0.85,
+            50,
+            0
+        ),
+        # Rule 4: Tax mismatch → +20 risk
+        tax_mismatch_risk_points=pw.if_else(
+            pw.this.tax_mismatch,
+            20,
+            0
+        )
+    )
+    
+    # Sum up risk points and cap at 100
+    risk_scored = risk_scored.select(
+        *pw.this,
+        raw_risk_score=(
+            pw.this.deviation_risk_points +
+            pw.this.bank_change_risk_points +
+            pw.this.duplicate_risk_points +
+            pw.this.tax_mismatch_risk_points
+        )
+    )
+    
+    # Cap risk score at 100 and assign risk level
+    final_risk = risk_scored.select(
+        invoice_id=pw.this.invoice_id,
+        vendor_id=pw.this.vendor_id,
+        amount=pw.this.amount,
+        tax=pw.this.tax,
+        # Capped risk score
+        risk_score=pw.if_else(
+            pw.this.raw_risk_score > 100,
+            100,
+            pw.this.raw_risk_score
+        ),
+        # Risk level categorization
+        risk_level=pw.if_else(
+            pw.this.raw_risk_score > 60,
+            "High",
+            pw.if_else(
+                pw.this.raw_risk_score > 30,
+                "Medium",
+                "Low"
+            )
+        ),
+        # Decision based on risk level
+        decision=pw.if_else(
+            pw.this.raw_risk_score > 60,
+            "Reject",
+            pw.if_else(
+                pw.this.raw_risk_score > 30,
+                "Review",
+                "Approve"
+            )
+        ),
+        # Include contributing factors for transparency
+        deviation_triggered=pw.apply(lambda x: abs(x) > 30, pw.this.deviation_percentage),
+        bank_change_triggered=pw.this.bank_account_changed,
+        duplicate_triggered=(pw.this.dup_similarity > 0.85),
+        tax_mismatch_triggered=pw.this.tax_mismatch,
+        # Risk breakdown
+        risk_breakdown=pw.cast(str, 
+            "Deviation:" + pw.cast(str, pw.this.deviation_risk_points) + " " +
+            "BankChange:" + pw.cast(str, pw.this.bank_change_risk_points) + " " +
+            "Duplicate:" + pw.cast(str, pw.this.duplicate_risk_points) + " " +
+            "TaxMismatch:" + pw.cast(str, pw.this.tax_mismatch_risk_points)
+        )
+    )
+    
+    return final_risk
+
+
+def generate_risk_summary(risk_table: pw.Table) -> pw.Table:
+    """
+    Generate summary statistics for risk scoring results.
+    
+    Args:
+        risk_table: Pathway Table with risk scores
+    
+    Returns:
+        Pathway Table with summary statistics by risk level and decision
+    """
+    
+    # Summary by risk level
+    risk_summary = risk_table.groupby(risk_table.risk_level).reduce(
+        risk_level=risk_table.risk_level,
+        count=pw.reducers.count(),
+        avg_risk_score=pw.reducers.avg(risk_table.risk_score),
+        total_amount=pw.reducers.sum(risk_table.amount)
+    )
+    
+    return risk_summary
+
+
 if __name__ == "__main__":
     # Example usage
     from invoice_stream import generate_invoice_stream
     from vendor_state import track_vendor_state, enrich_with_vendor_context
     
-    print("Testing risk engine...")
+    print("=" * 70)
+    print("RISK ENGINE - Testing Suite")
+    print("=" * 70)
     
     # Generate sample invoices
-    invoices = generate_invoice_stream(num_invoices=100)
+    print("\n📊 Generating invoice stream...")
+    invoices = generate_invoice_stream(num_invoices=50, interval_ms=100)
     
     # Track vendor statistics
+    print("📈 Tracking vendor statistics...")
     vendor_stats = track_vendor_state(invoices)
     
     # Enrich invoices with vendor context
+    print("🔍 Enriching invoices with vendor context...")
     enriched_invoices = enrich_with_vendor_context(invoices, vendor_stats)
     
-    # Compute risk scores
+    # Test 1: Composite risk scoring (existing complex logic)
+    print("\n" + "=" * 70)
+    print("Test 1: Composite Risk Scoring (Multi-factor)")
+    print("=" * 70)
     risk_scores = compute_composite_risk_score(enriched_invoices)
-    
-    # Get high-risk invoices
     high_risk = filter_high_risk_invoices(risk_scores, threshold=0.6)
     
-    # Display results
-    print("\nHigh Risk Invoices:")
+    print("\n🚨 High Risk Invoices (Composite Scoring):")
     pw.debug.compute_and_print(high_risk)
+    
+    # Test 2: Real-time focused risk scoring (new clean logic)
+    print("\n" + "=" * 70)
+    print("Test 2: Real-Time Risk Scoring (Focused Rules)")
+    print("=" * 70)
+    print("\nRules:")
+    print("  • Deviation > 30% → +30 risk points")
+    print("  • Bank account changed → +40 risk points")
+    print("  • Duplicate similarity > 0.85 → +50 risk points")
+    print("  • Tax mismatch → +20 risk points")
+    print("  • Risk score capped at 100")
+    print("\nLevels: Low (0-30) | Medium (31-60) | High (61-100)")
+    print("Decisions: Approve | Review | Reject\n")
+    
+    realtime_risk = compute_realtime_risk_score(enriched_invoices)
+    
+    print("📋 Risk Scoring Results:")
+    pw.debug.compute_and_print(realtime_risk)
+    
+    # Generate summary
+    print("\n📊 Risk Summary:")
+    summary = generate_risk_summary(realtime_risk)
+    pw.debug.compute_and_print(summary)
+    
+    print("\n" + "=" * 70)
+    print("✅ Risk Engine Tests Complete")
+    print("=" * 70)

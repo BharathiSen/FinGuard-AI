@@ -14,19 +14,19 @@ def main():
     print("""
     ╔═══════════════════════════════════════════════════════════╗
     ║                                                           ║
-    ║              🛡️  FinGuard AI                             ║
+    ║                FinGuard AI                             ║
     ║      Real-Time Fraud Detection (Pathway Streaming)       ║
     ║                                                           ║
     ╚═══════════════════════════════════════════════════════════╝
     """)
     
-    print("🚀 Launching streaming pipeline...\n")
+    print(" Launching streaming pipeline...\n")
     
     try:
         # Simply exec the pipeline
         subprocess.run([sys.executable, "pipeline.py"] + sys.argv[1:])
     except KeyboardInterrupt:
-        print("\n\n⏹️  Stopped by user.")
+        print("\n\n  Stopped by user.")
     except Exception as e:
         print(f"\n❌ Error: {e}")
         sys.exit(1)

@@ -18,15 +18,21 @@ from vendor_state import (
     detect_vendor_anomalies
 )
 from duplicate_detector import detect_near_duplicates_simple
+from semantic_duplicates import (
+    detect_semantic_duplicates,
+    enrich_with_semantic_duplicate_info
+)
 from risk_engine import (
     compute_composite_risk_score,
+    compute_realtime_risk_score,
     filter_high_risk_invoices,
     create_risk_alerts,
     apply_autonomous_decision
 )
 from llm_explainer import (
     generate_rule_based_explanation,
-    generate_llm_explanation
+    generate_llm_explanation,
+    generate_explanations_for_invoices
 )
 
 
@@ -49,7 +55,10 @@ class FraudDetectionPipeline:
         self,
         use_llm: bool = False,
         llm_model: str = "gpt-4o-mini",
-        num_invoices: Optional[int] = None
+        use_semantic_duplicates: bool = False,
+        semantic_threshold: float = 0.85,
+        num_invoices: Optional[int] = None,
+        use_realtime_scoring: bool = True
     ):
         """
         Initialize the fraud detection pipeline.
@@ -57,11 +66,17 @@ class FraudDetectionPipeline:
         Args:
             use_llm: Whether to use LLM for explanations (requires API key)
             llm_model: LLM model to use
+            use_semantic_duplicates: Use semantic (embedding-based) duplicate detection
+            semantic_threshold: Similarity threshold for semantic duplicates (default: 0.85)
             num_invoices: Number of invoices to generate (None = infinite stream)
+            use_realtime_scoring: Use focused real-time risk scoring (rule-based, transparent)
         """
         self.use_llm = use_llm
         self.llm_model = llm_model
+        self.use_semantic_duplicates = use_semantic_duplicates
+        self.semantic_threshold = semantic_threshold
         self.num_invoices = num_invoices
+        self.use_realtime_scoring = use_realtime_scoring
         
         # Pipeline streaming tables (all auto-updating)
         self.invoices = None
@@ -69,9 +84,11 @@ class FraudDetectionPipeline:
         self.enriched_invoices = None
         self.duplicates = None
         self.risk_scores = None
+        self.realtime_risk = None  # 📊 Focused real-time risk scores
         self.decisions = None  # 🔥 Autonomous decisions
         self.high_risk_alerts = None
         self.explanations = None
+        self.explained_invoices = None  # 📝 All invoices with professional explanations
     
     def setup_input_stream(self) -> pw.Table:
         """Set up the real-time invoice stream."""
@@ -111,19 +128,43 @@ class FraudDetectionPipeline:
         
         print("🔍 Detecting fraud patterns...")
         
-        # Detect duplicates using streaming joins
-        self.duplicates = detect_near_duplicates_simple(self.invoices)
+        if self.use_semantic_duplicates:
+            print("   🧠 Using semantic duplicate detection (embeddings)...")
+            try:
+                # Detect semantic duplicates using embeddings
+                self.duplicates = detect_semantic_duplicates(
+                    self.invoices,
+                    similarity_threshold=self.semantic_threshold
+                )
+            except ImportError:
+                print("   ⚠️  sentence-transformers not installed, falling back to simple detection")
+                self.duplicates = detect_near_duplicates_simple(self.invoices)
+            except Exception as e:
+                print(f"   ⚠️  Semantic detection failed ({e}), using simple detection")
+                self.duplicates = detect_near_duplicates_simple(self.invoices)
+        else:
+            print("   ⚡ Using fast exact-match duplicate detection...")
+            # Detect duplicates using streaming joins (faster)
+            self.duplicates = detect_near_duplicates_simple(self.invoices)
     
     def compute_risk_assessment(self):
         """Compute comprehensive risk scores."""
         
         print("💯 Computing risk scores...")
         
-        # Compute composite risk scores
-        self.risk_scores = compute_composite_risk_score(
-            self.enriched_invoices,
-            duplicate_info=self.duplicates
-        )
+        if self.use_realtime_scoring:
+            print("   📊 Using real-time focused risk scoring (transparent rules)...")
+            # Compute focused real-time risk scores (clean, rule-based)
+            self.realtime_risk = compute_realtime_risk_score(self.enriched_invoices)
+            # Use realtime risk for decisions
+            self.risk_scores = self.realtime_risk
+        else:
+            print("   🔬 Using composite risk scoring (multi-factor)...")
+            # Compute composite risk scores (complex)
+            self.risk_scores = compute_composite_risk_score(
+                self.enriched_invoices,
+                duplicate_info=self.duplicates
+            )
         
         print("🔥 Applying autonomous decision engine...")
         
@@ -141,7 +182,18 @@ class FraudDetectionPipeline:
         
         print("💡 Generating explanations...")
         
-        # Generate explanations for high-risk invoices
+        # Generate professional audit-ready explanations for ALL invoices
+        print("   📝 Generating professional explanations for all invoices...")
+        try:
+            self.explained_invoices = generate_explanations_for_invoices(
+                self.risk_scores
+            )
+        except Exception as e:
+            print(f"   ⚠️  Professional explanation generation failed: {e}")
+            self.explained_invoices = self.risk_scores
+        
+        # Generate detailed explanations for high-risk invoices only
+        print("   🚨 Generating detailed explanations for high-risk alerts...")
         if self.use_llm:
             try:
                 self.explanations = generate_llm_explanation(
@@ -149,7 +201,7 @@ class FraudDetectionPipeline:
                     model=self.llm_model
                 )
             except Exception as e:
-                print(f"⚠️  LLM failed, using rule-based: {e}")
+                print(f"   ⚠️  LLM failed, using rule-based: {e}")
                 self.explanations = generate_rule_based_explanation(
                     self.high_risk_alerts
                 )
@@ -159,11 +211,7 @@ class FraudDetectionPipeline:
             )
     
     def setup_outputs(self):
-        """Set up output connectors."""
-        
-        print(f"Setting up outputs ({self.output_mode})...")
-        
-        # Create oreal-time output streams."""
+        """Set up real-time output streams."""
         
         print("📤 Setting up real-time outputs...")
         
@@ -171,26 +219,44 @@ class FraudDetectionPipeline:
         os.makedirs("output", exist_ok=True)
         
         # Write streaming output - auto-updates as new invoices arrive
+        
+        # High-risk alerts only
         pw.io.jsonlines.write(
             self.high_risk_alerts,
             "output/high_risk_alerts.jsonl"
         )
         
+        # Detailed explanations for high-risk invoices
         pw.io.jsonlines.write(
             self.explanations,
             "output/explanations.jsonl"
         )
         
+        # Vendor statistics (incremental aggregations)
         pw.io.jsonlines.write(
             self.vendor_stats,
             "output/vendor_stats.jsonl"
         )
         
-        # 🔥 Output autonomous decisions
+        # 🔥 Autonomous decisions (all invoices)
         pw.io.jsonlines.write(
             self.decisions,
             "output/autonomous_decisions.jsonl"
         )
+        
+        # 📝 All invoices with professional explanations
+        if self.explained_invoices is not None:
+            pw.io.jsonlines.write(
+                self.explained_invoices,
+                "output/all_invoices_explained.jsonl"
+            )
+        
+        # 📊 Real-time risk scores (if using focused scoring)
+        if self.use_realtime_scoring and self.realtime_risk is not None:
+            pw.io.jsonlines.write(
+                self.realtime_risk,
+                "output/realtime_risk_scores.jsonl"
+            )
     
     def run(self):
         """
@@ -296,10 +362,26 @@ if __name__ == "__main__":
         help="Enable LLM-based explanations (requires OPENAI_API_KEY)"
     )
     parser.add_argument(
+        "--use-semantic-duplicates",
+        action="store_true",
+        help="Use semantic (embedding-based) duplicate detection (requires sentence-transformers)"
+    )
+    parser.add_argument(
+        "--semantic-threshold",
+        type=float,
+        default=0.85,
+        help="Similarity threshold for semantic duplicates (default: 0.85)"
+    )
+    parser.add_argument(
         "--num-invoices",
         type=int,
         default=None,
         help="Number of invoices to generate (default: infinite stream)"
+    )
+    parser.add_argument(
+        "--use-composite-scoring",
+        action="store_true",
+        help="Use composite risk scoring instead of focused real-time scoring"
     )
     
     args = parser.parse_args()
@@ -308,7 +390,10 @@ if __name__ == "__main__":
         # Create and run streaming pipeline
         pipeline = FraudDetectionPipeline(
             use_llm=args.use_llm,
-            num_invoices=args.num_invoices
+            use_semantic_duplicates=args.use_semantic_duplicates,
+            semantic_threshold=args.semantic_threshold,
+            num_invoices=args.num_invoices,
+            use_realtime_scoring=not args.use_composite_scoring
         )
         
         pipeline.run()
